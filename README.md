@@ -38,3 +38,13 @@ Adults (35–65) with Type 2 diabetes (or their caregivers) who currently log re
 - [x] Persistent medical disclaimer footer on all screens
 - [x] Large tap targets and accessible typography (min 16px text)
 - [x] Development server verified with Metro bundler & QR code
+
+## Milestone 2 Status
+- [x] SQLite data layer configured with `expo-sqlite`
+- [x] Tables created: `readings`, `meals`, `photos`, `analyses`, `settings`
+- [x] Complete CRUD helpers implemented with strict field boundaries
+- [x] Time utilities (`src/lib/time.js`): `nowLocalInputValue()`, `formatDisplay()`, `minutesBetween()`, and UTC shift prevention
+- [x] Automated test runner (`scripts/test-time.js`): 17/17 tests passing
+- [x] Hidden Dev/Test Screen (`DevTimestampTestScreen.js`): verifies save → reload → non-time edit → timestamp unchanged rule in real-time
+- [x] Live access from Settings tab in Expo Go
+
