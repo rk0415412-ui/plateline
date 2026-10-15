@@ -1,0 +1,96 @@
+# PLATELINE — COMPLETE MASTER BUILD PROMPT (Mobile Edition)
+## Paste this entire block into your AI coding IDE (Antigravity / Cursor / Windsurf) as the first message.
+## Save it as PROJECT_RULES.md in the repo root before writing any code.
+
+---
+
+I am building **PlateLine**, a privacy-first, local-first mobile app (Android-first) for a hackathon. I have a limited build window and **zero budget**: no paid service, API, hosting, database, subscription, or billing may ever be enabled. If a free tier runs out, degrade gracefully — never fake functionality.
+
+## WHAT PLATELINE IS
+A meal-and-glucose journal that puts home-cooked meals, glucose readings, and therapy (pill/insulin) timing on ONE chronological timeline. Optional AI meal-photo analysis acts as a **"Draft-Maker"**: it proposes food items and nutrition MIN–MAX ranges; the user reviews, corrects, and must explicitly Accept. AI is never required to log anything. Formerly "Glucose Journal."
+
+## TARGET USER
+Adults (35–65) with Type 2 diabetes (or their caregivers) who currently log readings in a notebook, eat predominantly home-cooked multi-ingredient meals that barcode apps fail on, own a mid-range Android phone, and are cost-sensitive and privacy-conscious.
+
+## LOCKED STACK — do not change
+- **Framework:** Expo (React Native, JavaScript)
+- **Local DB:** expo-sqlite (SQLite) — all user data lives here, in the app sandbox
+- **Photos:** expo-image-picker, expo-image-manipulator (downscale to max 1280px), expo-file-system (store in app documents)
+- **Charts:** Victory Native XL (react-native-svg)
+- **Report:** expo-print + expo-sharing (on-device A4 PDF, share via OS share sheet)
+- **Localization:** expo-localization + i18n-js (English now, Hindi later)
+- **AI proxy:** ONE Cloudflare Worker (free tier), server/index.js-style single function, key in Worker env var ONLY
+- **AI:** Gemini Vision API, free tier only, optional, only if eligible — verify quota/data terms first
+- **Version control:** Git + private repo; .gitignore must include .env, node_modules, /dist
+
+## HARD RULES — violation means the build failed
+1. All user data stays in on-device SQLite. No cloud database, no accounts, no sync.
+2. Glucose values and history NEVER leave the device. The AI proxy receives ONLY a meal photo, and ONLY after explicit in-app consent.
+3. API keys exist ONLY in server-side env vars (Cloudflare Worker secret). Never in app code, never in the repo, never logged.
+4. NOT A MEDICAL DEVICE. Never diagnose, never recommend insulin/medication/treatment, never predict glucose from a photo, never say a meal "caused" a reading. Use only: "recorded near", "appeared after", "recorded X min after: [meal]".
+5. AI nutrition values are estimates: always show MIN–MAX ranges, always label "AI estimate", always allow rename/adjust/add/remove, and require Accept before saving. Track source per value: 'ai' | 'user' | 'demo'. Show a small badge when user-edited.
+6. Store timestamps as LOCAL date-time strings. No UTC conversion. Prove stability: save, reload, edit a non-time field, confirm timestamp unchanged.
+7. One glucose unit throughout (default mg/dL, configurable in Settings), clearly labelled everywhere. Never silently mix units.
+8. Reading context is optional: Fasting / Before meal / After meal / Other / Prefer not to specify. Save null if unset; display "Context not specified". NEVER infer context from time, photo, or glucose value.
+9. Pattern cards appear ONLY when a keyword-normalized meal has 3+ pairs (readings 1–3h after the meal). Every card MUST include verbatim: "These are recorded associations only. Many factors affect glucose, and this does not show that a meal caused a reading." No advice, no prediction. Otherwise show "Not enough data yet (need 3+ matching entries)."
+10. Every report and the app itself carry the footer: "PlateLine is a journaling tool, not a medical device."
+11. Use ONLY fictional demo data. Add a "Load demo data" button producing 5 days of records, some AI-style estimates labelled "Demo sample", enough repeated meals to trigger exactly one pattern card, plus "Remove demo data".
+12. Work in small verifiable steps. After each step: run the app, check Metro/console logs, and tell me EXACTLY what you tested. Never claim something works without verifying it.
+13. Do not rebuild working parts; make minimal, focused diffs.
+14. If AI is unavailable or quota is exhausted, ship manual entry with a clearly labelled "AI analysis unavailable" state. NEVER fake analysis results.
+
+## DATA MODEL (SQLite tables)
+- readings: id, value, unit, recordedAt, context(nullable), notes, createdAt, updatedAt
+- meals: id, recordedAt, description, photoPath(nullable), nutrition{calories,carbs,protein,fat,fibre} each{min,max,source}, therapyNotes(nullable), analysisStatus, createdAt, updatedAt
+- photos: key, filePath, blob (<=1280px)
+- analyses: id, mealId, items[{name,portion,confidence}], uncertaintyNotes, model, analysedAt, acceptedByUser
+- settings: key, value (unit, targetRange, aiConsentGiven, language)
+
+## SCREENS & NAV (bottom tabs: Timeline | Add | Chart | Report | Settings)
+1. **Add — Quick Reading (<20s):** value required with friendly range validation; date/time pre-filled with current local time, editable, NOT reset by other fields; optional context; optional notes; edit preserves timestamp unless user changes it; delete with confirmation.
+2. **Add — Meal Log:** same timestamp rules; optional photo (reject non-images, downscale to 1280px, handle permission/oversize errors gracefully); description; optional manual nutrition (source 'user'); optional therapy notes (pill/insulin timing); edit and delete.
+3. **Analyse Meal (on Meal Log, only when photo exists):** first-use consent dialog (plain language: only the photo is sent, who receives it, glucose data never sent), consent saved in settings, withdrawable in Settings; loading state + cancel + 20s timeout; editable review card (items, portions, min–max ranges labelled "AI estimate", uncertainty notes, Add missing / Remove false / Accept / Edit / Discard); nothing saves until Accept; failure shows "AI analysis unavailable" and keeps manual entry working.
+4. **Timeline:** reverse-chronological, grouped by day, meals + readings together; each reading shows value, unit, context ("Context not specified" if null), and if a meal exists within the prior 4h a neutral line "Recorded 95 min after: Dal and rice"; meals show thumbnail, description, nutrition with 'AI estimate'/'Your entry' labels; filters: date range, readings only, meals only; helpful empty state; NO causal wording anywhere.
+5. **Chart:** glucose line, 7/14/30-day selector, target-range band from Settings labelled "your target range", meal markers with description tooltips, honest rendering of gaps and single points, no interpretation text.
+6. **Report:** date-range selector; summary (period, count, min/max/average labelled as simple statistics), chart, readings table with context/notes, meals table with nutrition (labelled estimate/user-entered); expo-print A4 PDF with disclaimer footer; share via expo-sharing; JSON export (photos base64) and import (validate schema, preview, merge-or-replace choice) in Settings.
+7. **Settings:** unit, target range, AI consent toggle, plain-language Privacy section (data stays in this phone's app storage; uninstalling deletes it; AI sends only the meal photo after consent; use export as backup), backup reminder, "Delete all my data" with TYPED confirmation; first-run welcome screen with the medical disclaimer.
+
+## AI PROXY SPEC (Cloudflare Worker, free tier)
+- POST /analyse-meal: accepts one image (jpeg/png/webp, max 4MB) as multipart or base64; checks type/size; basic rate limiting; CORS limited to the app; key from env; sends ONLY image + fixed instruction requesting JSON: items[{name,portion,confidence}], nutrition{calories,carbs,protein,fat,fibre} each{min,max}, uncertaintyNotes, and a scale-unclear note; validates response shape; clear error codes for quota/timeout/bad image; never logs images or keys.
+- First, BEFORE coding: verify from official docs that my account has free-tier access to a vision-capable Gemini model, whether billing is required, what happens at quota exhaustion, and the data-use terms. Summarize findings; do NOT enable billing.
+
+## BUILD ORDER (one milestone at a time; verify each before continuing)
+M1 Scaffold: Expo app, folders (src/components, src/screens, src/db, src/lib, src/styles, worker/), bottom nav, footer disclaimer line, README stub.
+M2 SQLite layer + time utilities (nowLocalInputValue, formatDisplay, minutesBetween, no-shift guarantee) + timestamp stability test.
+M3 Quick Reading form — full CRUD verified.
+M4 Meal Log form — photo pick/downscale/store, manual nutrition — verified with/without photo.
+M5 Unified Timeline with 10+ fictional records across 3 days.
+M6 Chart with meal markers and target band.
+M7 Worker proxy + Analyse Meal consent/review flow (success, edit, discard, timeout, server-down paths).
+M8 Cautious Pattern Cards (3+ pair gate, disclaimer, "not enough data" state).
+M9 Report PDF + JSON export/import round-trip (export → delete → import → identical records).
+M10 Settings, privacy, consent, Delete-all, first-run welcome.
+M11 Demo data load/remove + full QA table (PASS/FAIL with how each was verified: both entry paths, timestamp stability, blank context, photo handling, real AI on real image, edit/accept/discard, reload persistence, timeline/chart/report consistency, export round-trip, offline fallback, no key in bundle/repo — search for it, consent flow, small-screen layout).
+M12 Polish (spacing, contrast, focus states, labels, keyboard nav, <20s quick reading) + re-run QA.
+M13 README (what/who/setup incl. Worker env var/architecture/privacy model/limitations/what it deliberately does NOT do) + EAS build to installable APK + 3-minute demo script + 5 likely judge questions with honest answers (e.g., "How did you validate the AI?" → we do not claim accuracy; we show ranges and require user confirmation).
+
+## BUFFER RULE
+If >2 hours behind after M7, cut M8 (Pattern Cards) and continue. Protect the core loop: record → review → timeline → report.
+
+## DEMO SCRIPT (3:00)
+0:00–0:20 problem: hand-loggers lose track of what they ate near each reading.
+0:20–0:40 live Quick Reading in under 20 seconds.
+0:40–1:40 meal photo → consent → AI draft → correct one item → accept; point out ranges/uncertainty; if AI not live, say "demo mode" plainly.
+1:40–2:10 timeline + chart with time gaps.
+2:10–2:25 pattern card + not-causation wording.
+2:25–2:50 PDF report via share sheet; "your data never left this phone"; Delete-all with typed confirmation.
+2:50–3:00 close: "AI assists; the user stays in control."
+
+## JUDGE Q&A (honest answers)
+- Why not an existing app? We serve hand-loggers with home-cooked meals; correction-first, not automation-first; no accounts, no cloud, no cost.
+- How did you validate the AI? We don't claim accuracy. Ranges, labelled, user-confirmed before anything is saved.
+- Does it say what causes spikes? No. Recorded associations only, stated explicitly on every card.
+- What if the AI is unavailable? Everything works with manual entry; AI is an optional draft-maker.
+- Where is the data? Only in this phone's local database; only the meal photo is sent, after consent.
+
+Begin now with M1. Read these rules before every task. Confirm you understand the hard rules before writing any code.
