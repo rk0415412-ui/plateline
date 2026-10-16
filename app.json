@@ -10,18 +10,35 @@
       "supportsTablet": true
     },
     "android": {
+      "package": "com.quantumplayer.plateline",
       "adaptiveIcon": {
-        "backgroundColor": "#0F172A",
-        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundColor": "#F6EFE3",
+        "foregroundImage": "./assets/splash-icon.png",
         "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
+        "monochromeImage": "./assets/splash-icon.png"
       }
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-sqlite"
-    ]
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#F6EFE3",
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 220,
+          "resizeMode": "contain"
+        }
+      ],
+      "expo-sqlite",
+      "expo-sharing"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "88d94b51-ceba-4664-8811-9d9e8ea3e390"
+      }
+    },
+    "owner": "quantumplayer"
   }
 }

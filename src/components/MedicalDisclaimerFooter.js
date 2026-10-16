@@ -14,17 +14,17 @@ export default function MedicalDisclaimerFooter() {
 
 const styles = StyleSheet.create({
   footerContainer: {
-    backgroundColor: theme.colors.footerBg,
+    backgroundColor: theme.colors.cream,
     paddingVertical: 10,
-    paddingHorizontal: 16,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: theme.colors.border,
+    paddingHorizontal: theme.spacing.screenPadding,
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.borderSubtle,
     alignItems: 'center',
     justifyContent: 'center',
   },
   footerText: {
-    color: theme.colors.footerText,
-    fontSize: 16,
+    color: theme.colors.taupe,
+    fontSize: theme.typography.caption.fontSize,
     textAlign: 'center',
     fontWeight: '500',
     letterSpacing: 0.2,

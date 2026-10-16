@@ -1,73 +1,390 @@
-import React, { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
+import React, { useState, useCallback, useContext } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  SectionList,
+  TouchableOpacity,
+  Image,
+  RefreshControl,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { theme } from '../styles/theme';
+import {
+  listAllReadings,
+  listAllMeals,
+  updateReading,
+  updateMeal,
+  deleteReading,
+  deleteMeal,
+} from '../db';
+import { nowLocalMinute, formatDisplay, parseLocalString } from '../lib/time';
+import EntryPreviewModal from '../components/EntryPreviewModal';
 import DevTimestampTestScreen from './DevTimestampTestScreen';
+import { TabBarScrollContext } from '../context/TabBarScrollContext';
 
-export default function TimelineScreen() {
+const FULL_MONTHS = [
+  'JANUARY', 'FEBRUARY', 'MARCH', 'APRIL', 'MAY', 'JUNE',
+  'JULY', 'AUGUST', 'SEPTEMBER', 'OCTOBER', 'NOVEMBER', 'DECEMBER'
+];
+
+/**
+ * Format local date string into day header:
+ * - "TODAY"
+ * - "YESTERDAY"
+ * - "14 OCTOBER"
+ */
+function getDayHeaderTitle(dateKey) {
+  try {
+    const todayKey = nowLocalMinute().slice(0, 10);
+    if (dateKey === todayKey) {
+      return 'TODAY';
+    }
+
+    const { year, month, day } = parseLocalString(`${todayKey}T00:00:00`);
+    const todayDate = new Date(year, month - 1, day);
+    const yesterdayDate = new Date(todayDate);
+    yesterdayDate.setDate(todayDate.getDate() - 1);
+
+    const yYear = yesterdayDate.getFullYear();
+    const yMonth = String(yesterdayDate.getMonth() + 1).padStart(2, '0');
+    const yDay = String(yesterdayDate.getDate()).padStart(2, '0');
+    const yesterdayKey = `${yYear}-${yMonth}-${yDay}`;
+
+    if (dateKey === yesterdayKey) {
+      return 'YESTERDAY';
+    }
+
+    const parts = dateKey.split('-');
+    if (parts.length === 3) {
+      const d = parseInt(parts[2], 10);
+      const m = parseInt(parts[1], 10) - 1;
+      const monthName = FULL_MONTHS[m] || '';
+      return `${d} ${monthName}`;
+    }
+
+    return dateKey.toUpperCase();
+  } catch (e) {
+    return dateKey;
+  }
+}
+
+/**
+ * Extract medicine text from reading notes if present
+ */
+function extractMedicine(notes) {
+  if (!notes || typeof notes !== 'string') return null;
+  if (notes.includes('Med:')) {
+    const parts = notes.split('|');
+    const medPart = parts.find((p) => p.trim().startsWith('Med:'));
+    if (medPart) {
+      return medPart.replace('Med:', '').trim();
+    }
+  }
+  return null;
+}
+
+export default function TimelineScreen({ navigation }) {
+  const { onScroll } = useContext(TabBarScrollContext);
+  const [sections, setSections] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [selectedEntry, setSelectedEntry] = useState(null);
   const [showDevTest, setShowDevTest] = useState(false);
+
+  const loadTimelineData = async () => {
+    try {
+      const [readings, meals] = await Promise.all([
+        listAllReadings(),
+        listAllMeals(),
+      ]);
+
+      const normalizedReadings = (readings || []).map((r) => ({
+        id: r.id,
+        type: 'reading',
+        entryType: 'reading',
+        value: r.value,
+        unit: r.unit || 'mg/dL',
+        time: r.recordedAt,
+        recordedAt: r.recordedAt,
+        context: r.context,
+        notes: r.notes,
+        raw: r,
+      }));
+
+      const normalizedMeals = (meals || []).map((m) => ({
+        id: m.id,
+        type: 'meal',
+        entryType: 'meal',
+        meal_type: m.meal_type || 'Meal',
+        description: m.description,
+        carbs: m.carbs,
+        photo_uri: m.photo_uri || m.photoPath,
+        photoPath: m.photo_uri || m.photoPath,
+        note: m.note,
+        notes: m.note,
+        time: m.created_at || m.recordedAt,
+        created_at: m.created_at || m.recordedAt,
+        recordedAt: m.created_at || m.recordedAt,
+        raw: m,
+      }));
+
+      // Combined and sorted newest first
+      const combined = [...normalizedReadings, ...normalizedMeals].sort(
+        (a, b) => (b.time || '').localeCompare(a.time || '')
+      );
+
+      // Group by day key 'YYYY-MM-DD'
+      const groupsMap = new Map();
+      combined.forEach((item) => {
+        const dateKey = (item.time || '').slice(0, 10) || 'Unknown';
+        if (!groupsMap.has(dateKey)) {
+          groupsMap.set(dateKey, []);
+        }
+        groupsMap.get(dateKey).push(item);
+      });
+
+      const sectionList = [];
+      groupsMap.forEach((data, dateKey) => {
+        sectionList.push({
+          dateKey,
+          title: getDayHeaderTitle(dateKey),
+          data,
+        });
+      });
+
+      setSections(sectionList);
+    } catch (err) {
+      console.warn('Error loading timeline data:', err);
+    } finally {
+      setIsLoading(false);
+      setRefreshing(false);
+    }
+  };
+
+  useFocusEffect(
+    useCallback(() => {
+      loadTimelineData();
+    }, [])
+  );
+
+  const handleRefresh = () => {
+    setRefreshing(true);
+    loadTimelineData();
+  };
+
+  const handleSaveNotes = async (entry, updatedNotes) => {
+    if (entry.entryType === 'reading') {
+      await updateReading(entry.id, { notes: updatedNotes || null });
+    } else {
+      await updateMeal(entry.id, { note: updatedNotes || null });
+    }
+    await loadTimelineData();
+  };
+
+  const handleDeleteEntry = async (entry) => {
+    if (entry.entryType === 'reading') {
+      await deleteReading(entry.id);
+    } else {
+      await deleteMeal(entry.id);
+    }
+    await loadTimelineData();
+  };
 
   if (showDevTest) {
     return <DevTimestampTestScreen onBack={() => setShowDevTest(false)} />;
   }
 
+  const renderSectionHeader = ({ section: { title } }) => (
+    <View style={styles.sectionHeaderContainer}>
+      <Text style={styles.sectionHeaderText}>{title}</Text>
+    </View>
+  );
+
+  const renderItem = ({ item }) => {
+    const isReading = item.type === 'reading';
+    const timeFormatted = formatDisplay(item.time, {
+      includeDate: false,
+      includeTime: true,
+    });
+    const medicine = isReading ? extractMedicine(item.notes) : null;
+    const hasPhoto = !isReading && !!(item.photo_uri || item.photoPath);
+
+    return (
+      <TouchableOpacity
+        style={styles.cardRow}
+        activeOpacity={0.8}
+        onPress={() => setSelectedEntry(item.raw ? { ...item.raw, entryType: item.type } : item)}
+        accessibilityRole="button"
+        accessibilityLabel={`${isReading ? 'Reading' : 'Meal'} entry at ${timeFormatted}`}
+      >
+        {/* 4px Left Color Bar: Ochre for readings, Terracotta for meals */}
+        <View
+          style={[
+            styles.leftBar,
+            {
+              backgroundColor: isReading
+                ? theme.colors.ochre
+                : theme.colors.terracotta,
+            },
+          ]}
+        />
+
+        <View style={styles.cardContent}>
+          {isReading ? (
+            /* READING ROW */
+            <View style={styles.readingRowContainer}>
+              <View style={styles.readingTopRow}>
+                <View style={styles.valueGroup}>
+                  <Text style={styles.glucoseValue}>
+                    {item.value}{' '}
+                    <Text style={styles.glucoseUnit}>{item.unit}</Text>
+                  </Text>
+                  {item.context ? (
+                    <Text style={styles.contextLabel}>{item.context}</Text>
+                  ) : null}
+                </View>
+
+                <Text style={styles.timeText}>{timeFormatted}</Text>
+              </View>
+
+              {/* Second line: Medicine in dusty rose with 💊 if present */}
+              {medicine ? (
+                <View style={styles.medicineRow}>
+                  <Text style={styles.medicineIcon}>💊</Text>
+                  <Text style={styles.medicineText} numberOfLines={1}>
+                    {medicine}
+                  </Text>
+                </View>
+              ) : item.notes && !medicine ? (
+                <Text style={styles.notesText} numberOfLines={1}>
+                  {item.notes}
+                </Text>
+              ) : null}
+            </View>
+          ) : (
+            /* MEAL ROW */
+            <View style={styles.mealRowContainer}>
+              <View style={styles.mealTopRow}>
+                <View style={styles.mealChipGroup}>
+                  <View style={styles.mealChip}>
+                    <Text style={styles.mealChipText}>{item.meal_type}</Text>
+                  </View>
+                  {item.carbs !== null &&
+                  item.carbs !== undefined &&
+                  String(item.carbs).trim() !== '' ? (
+                    <Text style={styles.carbsText}>~{item.carbs}g carbs</Text>
+                  ) : null}
+                </View>
+
+                <Text style={styles.timeText}>{timeFormatted}</Text>
+              </View>
+
+              <View style={styles.mealBottomRow}>
+                <View style={styles.mealDescriptionColumn}>
+                  <Text
+                    style={styles.mealDescription}
+                    numberOfLines={2}
+                    ellipsizeMode="tail"
+                  >
+                    {item.description || 'Meal logged'}
+                  </Text>
+                </View>
+
+                {/* 48px Photo Thumbnail if present */}
+                {hasPhoto && (
+                  <Image
+                    source={{ uri: item.photo_uri || item.photoPath }}
+                    style={styles.photoThumb}
+                    resizeMode="cover"
+                  />
+                )}
+              </View>
+            </View>
+          )}
+        </View>
+      </TouchableOpacity>
+    );
+  };
+
+  const totalEntries = sections.reduce((acc, s) => acc + s.data.length, 0);
+
   return (
     <SafeAreaView style={styles.safeArea}>
-      <ScrollView contentContainerStyle={styles.container}>
-        <View style={styles.header}>
+      {/* Top Header */}
+      <View style={styles.header}>
+        <View style={styles.headerTitleRow}>
           <Text style={styles.headerTitle}>Timeline</Text>
-          <Text style={styles.headerSubtitle}>
-            Meals, glucose readings & therapy timing on one unified view
-          </Text>
-        </View>
-
-        {/* Milestone 2 Verification Card */}
-        <View style={styles.devCard}>
-          <View style={styles.devHeaderRow}>
-            <View style={styles.devIconCircle}>
-              <Ionicons name="flask-outline" size={24} color={theme.colors.accentMint} />
-            </View>
-            <View style={styles.devTitleColumn}>
-              <Text style={styles.devCardTitle}>Milestone 2 Verification</Text>
-              <Text style={styles.devCardSubtitle}>Timestamp Stability & SQLite</Text>
-            </View>
-          </View>
-          <Text style={styles.devDescription}>
-            Proves Hard Rule 6: saves record to SQLite, simulates reload, edits non-time notes field, and verifies local timestamp is 100% unchanged.
-          </Text>
           <TouchableOpacity
-            style={styles.devButton}
+            style={styles.devTestButton}
             onPress={() => setShowDevTest(true)}
-            activeOpacity={0.8}
             accessibilityRole="button"
-            accessibilityLabel="Run Timestamp Stability Test"
+            accessibilityLabel="Timestamp stability test"
           >
-            <Ionicons name="play-circle-outline" size={22} color="#0F172A" />
-            <Text style={styles.devButtonText}>Run Timestamp Stability Test</Text>
+            <Ionicons name="flask-outline" size={18} color={theme.colors.taupe} />
           </TouchableOpacity>
         </View>
+        <Text style={styles.headerSubtitle}>
+          Meals & readings grouped by day, newest first
+        </Text>
+      </View>
 
-        <View style={styles.card}>
-          <View style={styles.iconCircle}>
-            <Ionicons name="time-outline" size={36} color={theme.colors.primary} />
+      {/* Main List or Empty State */}
+      {!isLoading && totalEntries === 0 ? (
+        <View style={styles.emptyContainer}>
+          <View style={styles.emptyIconCircle}>
+            <Ionicons
+              name="calendar-clear-outline"
+              size={36}
+              color={theme.colors.taupe}
+            />
           </View>
-          <Text style={styles.cardTitle}>Unified Proximity Timeline</Text>
-          <Text style={styles.cardDescription}>
-            Your home-cooked meals, glucose checks, and medication timings will appear here in reverse chronological order.
+          <Text style={styles.emptyText}>
+            Nothing logged yet — swipe to Add to begin.
           </Text>
-          <View style={styles.badge}>
-            <Text style={styles.badgeText}>SQLite Layer Ready (Milestone 2)</Text>
-          </View>
+          <TouchableOpacity
+            style={styles.addEntryButton}
+            onPress={() => navigation && navigation.navigate('Add')}
+            activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityLabel="Add entry"
+          >
+            <Ionicons name="add" size={20} color={theme.colors.cream} />
+            <Text style={styles.addEntryButtonText}>Add entry</Text>
+          </TouchableOpacity>
         </View>
+      ) : (
+        <SectionList
+          sections={sections}
+          keyExtractor={(item) => `${item.type}-${item.id}`}
+          renderItem={renderItem}
+          renderSectionHeader={renderSectionHeader}
+          stickySectionHeadersEnabled={true}
+          contentContainerStyle={styles.listContent}
+          showsVerticalScrollIndicator={false}
+          onScroll={onScroll}
+          scrollEventThrottle={16}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={handleRefresh}
+              tintColor={theme.colors.terracotta}
+              colors={[theme.colors.terracotta]}
+            />
+          }
+        />
+      )}
 
-        <View style={styles.infoBox}>
-          <Ionicons name="shield-checkmark-outline" size={24} color={theme.colors.accentSky} />
-          <Text style={styles.infoText}>
-            Privacy-First: All entries stay securely in on-device SQLite storage.
-          </Text>
-        </View>
-      </ScrollView>
+      {/* Reusable EntryPreviewModal shared with Add tab */}
+      <EntryPreviewModal
+        visible={!!selectedEntry}
+        entry={selectedEntry}
+        onClose={() => setSelectedEntry(null)}
+        onSaveNotes={handleSaveNotes}
+        onDelete={handleDeleteEntry}
+      />
     </SafeAreaView>
   );
 }
@@ -75,139 +392,225 @@ export default function TimelineScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: theme.colors.background,
-  },
-  container: {
-    padding: theme.spacing.lg,
-    paddingBottom: 32,
+    backgroundColor: 'transparent',
   },
   header: {
-    marginBottom: theme.spacing.lg,
+    paddingHorizontal: theme.spacing.screenPadding,
+    paddingTop: 8,
+    paddingBottom: 10,
+    backgroundColor: 'transparent',
+  },
+  headerTitleRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
   headerTitle: {
-    fontSize: theme.typography.headingLarge,
-    fontWeight: '700',
-    color: theme.colors.textPrimary,
-    marginBottom: theme.spacing.xs,
+    fontSize: theme.typography.title.fontSize, // 28
+    fontWeight: theme.typography.title.fontWeight,
+    color: theme.colors.ink,
+  },
+  devTestButton: {
+    padding: 6,
+    borderRadius: 8,
   },
   headerSubtitle: {
-    fontSize: theme.typography.body,
-    color: theme.colors.textSecondary,
-    lineHeight: 22,
+    fontSize: theme.typography.caption.fontSize,
+    color: theme.colors.taupe,
+    marginTop: 2,
   },
-  devCard: {
-    backgroundColor: 'rgba(20, 184, 166, 0.08)',
-    borderRadius: theme.borderRadius.lg,
-    padding: theme.spacing.lg,
-    marginBottom: theme.spacing.lg,
-    borderWidth: 1.5,
-    borderColor: 'rgba(20, 184, 166, 0.35)',
+  listContent: {
+    paddingHorizontal: theme.spacing.screenPadding,
+    paddingBottom: 90, // room for floating bottom bar
   },
-  devHeaderRow: {
+  // Day Header: Sticky, small caps, terracotta semi-bold — "TODAY", "YESTERDAY", "14 OCTOBER"
+  sectionHeaderContainer: {
+    backgroundColor: theme.colors.cream,
+    paddingVertical: 10,
+    paddingHorizontal: 2,
+    marginTop: 6,
+  },
+  sectionHeaderText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: theme.colors.terracotta, // #C1553B
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
+  },
+  // Row: Sand card, 18px radius, warm shadow, minHeight >= 64px, 10px gaps
+  cardRow: {
+    backgroundColor: theme.colors.sand, // #FBF6EA
+    borderRadius: theme.radius.cards, // 18px
+    minHeight: 64, // Rows >=64px
+    marginBottom: 10, // 10px gaps
     flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: theme.spacing.sm,
-    gap: 12,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: theme.colors.borderSubtle,
+    ...theme.shadow.warm,
   },
-  devIconCircle: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: 'rgba(52, 211, 153, 0.15)',
-    alignItems: 'center',
+  // 4px left color bar — ochre for readings, terracotta for meals
+  leftBar: {
+    width: 4,
+    height: '100%',
+  },
+  cardContent: {
+    flex: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
     justifyContent: 'center',
   },
-  devTitleColumn: {
+  /* Reading Row Styles */
+  readingRowContainer: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  readingTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'baseline',
+  },
+  valueGroup: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 8,
     flex: 1,
   },
-  devCardTitle: {
-    fontSize: theme.typography.bodyLarge,
+  glucoseValue: {
+    fontSize: 20,
     fontWeight: '700',
-    color: theme.colors.textPrimary,
+    color: theme.colors.ink,
   },
-  devCardSubtitle: {
-    fontSize: 14,
-    color: theme.colors.accentMint,
-    fontWeight: '600',
+  glucoseUnit: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: theme.colors.taupe,
   },
-  devDescription: {
-    fontSize: theme.typography.body,
-    color: theme.colors.textSecondary,
-    lineHeight: 22,
-    marginBottom: theme.spacing.md,
+  contextLabel: {
+    fontSize: 12,
+    color: theme.colors.taupe,
+    fontStyle: 'italic',
   },
-  devButton: {
-    backgroundColor: theme.colors.primary,
-    borderRadius: theme.borderRadius.md,
-    minHeight: theme.touchTarget.largeButtonHeight,
+  timeText: {
+    fontSize: 12,
+    color: theme.colors.taupe,
+    fontWeight: '500',
+  },
+  medicineRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 5,
+    marginTop: 4,
+  },
+  medicineIcon: {
+    fontSize: 12,
+  },
+  medicineText: {
+    fontSize: 13,
+    color: theme.colors.rose, // Dusty rose #C98F7E
+    fontWeight: '600',
+    flex: 1,
+  },
+  notesText: {
+    fontSize: 12,
+    color: theme.colors.taupe,
+    marginTop: 4,
+  },
+  /* Meal Row Styles */
+  mealRowContainer: {
+    flex: 1,
     justifyContent: 'center',
-    paddingHorizontal: theme.spacing.lg,
+  },
+  mealTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  mealChipGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: 8,
   },
-  devButtonText: {
-    fontSize: theme.typography.bodyLarge,
+  mealChip: {
+    backgroundColor: theme.colors.mealChipBg,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: theme.radius.chips,
+  },
+  mealChipText: {
+    fontSize: 11,
     fontWeight: '700',
-    color: '#0F172A',
+    color: theme.colors.ink,
   },
-  card: {
-    backgroundColor: theme.colors.surface,
-    borderRadius: theme.borderRadius.lg,
-    padding: theme.spacing.lg,
-    alignItems: 'center',
-    marginBottom: theme.spacing.lg,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+  carbsText: {
+    fontSize: 12,
+    color: theme.colors.taupe, // "~45g carbs" in taupe
+    fontWeight: '500',
   },
-  iconCircle: {
-    width: 68,
-    height: 68,
-    borderRadius: 34,
-    backgroundColor: 'rgba(20, 184, 166, 0.15)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: theme.spacing.md,
-  },
-  cardTitle: {
-    fontSize: theme.typography.headingSmall,
-    fontWeight: '600',
-    color: theme.colors.textPrimary,
-    marginBottom: theme.spacing.sm,
-    textAlign: 'center',
-  },
-  cardDescription: {
-    fontSize: theme.typography.body,
-    color: theme.colors.textSecondary,
-    textAlign: 'center',
-    lineHeight: 24,
-    marginBottom: theme.spacing.md,
-  },
-  badge: {
-    backgroundColor: theme.colors.surfaceSubtle,
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: theme.borderRadius.sm,
-  },
-  badgeText: {
-    color: theme.colors.primaryLight,
-    fontSize: theme.typography.body,
-    fontWeight: '600',
-  },
-  infoBox: {
+  mealBottomRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(56, 189, 248, 0.08)',
-    borderRadius: theme.borderRadius.md,
-    padding: theme.spacing.md,
-    borderWidth: 1,
-    borderColor: 'rgba(56, 189, 248, 0.2)',
-    gap: 12,
+    justifyContent: 'space-between',
+    gap: 10,
+    marginTop: 2,
   },
-  infoText: {
+  mealDescriptionColumn: {
     flex: 1,
-    fontSize: theme.typography.body,
-    color: theme.colors.textSecondary,
+  },
+  mealDescription: {
+    fontSize: 14,
+    color: theme.colors.ink,
+    lineHeight: 19,
+  },
+  // 48px photo thumbnail right if present
+  photoThumb: {
+    width: 48,
+    height: 48,
+    borderRadius: 10,
+    backgroundColor: theme.colors.surfaceSubtle,
+    borderWidth: 1,
+    borderColor: theme.colors.borderSubtle,
+  },
+  /* Empty State */
+  emptyContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 32,
+    paddingBottom: 80,
+  },
+  emptyIconCircle: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: theme.colors.sand,
+    borderWidth: 1,
+    borderColor: theme.colors.borderSubtle,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
+  },
+  emptyText: {
+    fontSize: 15,
+    color: theme.colors.taupe, // Centered taupe text
+    textAlign: 'center',
     lineHeight: 22,
+    marginBottom: 20,
+  },
+  addEntryButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: theme.colors.terracotta, // Terracotta button
+    borderRadius: theme.radius.buttons, // 18px
+    minHeight: 48,
+    paddingHorizontal: 22,
+    gap: 6,
+    ...theme.shadow.ochreGlow,
+  },
+  addEntryButtonText: {
+    color: theme.colors.cream,
+    fontSize: 15,
+    fontWeight: '700',
   },
 });
